@@ -75,11 +75,16 @@ def theorem7_bound(eps, k, gamma):
 def _eval_tf_on_grid(num_coeffs, den_coeffs, omega):
     """Evaluate a transfer function num/den at frequencies *omega* (rad/s).
 
+    *num_coeffs* and *den_coeffs* are in DECREASING power order, the standard
+    control convention (``[1, 31, 259, 229]`` means s^3 + 31 s^2 + 259 s + 229).
+    ``np.polyval`` expects exactly that order, so the coefficients are passed
+    through unreversed.
+
     Returns complex array of same shape as omega.
     """
     s = 1j * omega
-    num = np.polyval(num_coeffs[::-1], s)
-    den = np.polyval(den_coeffs[::-1], s)
+    num = np.polyval(num_coeffs, s)
+    den = np.polyval(den_coeffs, s)
     return num / den
 
 
