@@ -188,7 +188,8 @@ def run_episode(level, plant_type, config, S, plant_seed, agent_seed,
     pm_per_mod = np.full((n_mod, S), np.nan)
     gm_pre_per_mod = np.full((n_mod, S), np.nan)  # margin BEFORE modification k
     pm_pre_per_mod = np.full((n_mod, S), np.nan)
-    val_up_margin_down = np.zeros((n_mod, S), dtype=bool)
+    val_up_margin_down = np.zeros((n_mod, S), dtype=bool)       # believed
+    val_up_true_margin_down = np.zeros((n_mod, S), dtype=bool)  # realised
 
     frozen = False  # for L1 baseline: freeze MRAC after step 1
 
@@ -240,9 +241,20 @@ def run_episode(level, plant_type, config, S, plant_seed, agent_seed,
                 true_best_per_mod[k - 1] = decision['true_best'] * nan_if_dead
                 chosen_per_mod[k - 1] = np.where(active, decision['chosen'], -1)
 
-                # did the chosen modification beat leaving the controller alone?
-                no_change_val = decision['true_values'][0]
-                val_up = decision['true_sel'] > no_change_val + 1e-10
+                # Did the agent BELIEVE the chosen modification beat leaving the
+                # controller alone?  This must use the in-sample (noisy) scores
+                # the agent actually selected on, not the exact-rollout truth --
+                # the quadrant of interest is "agent thinks it is improving
+                # while the margin shrinks", i.e. self-deception.  The previous
+                # code compared true_sel against true_values[0], both from the
+                # exact rollout, which measured a true-value-up quadrant and so
+                # could not support the self-deception reading.
+                val_up = (decision['in_sample'] >
+                          decision['noisy_scores'][0] + 1e-10)
+                # true-value counterpart, kept alongside so the gap between
+                # believed and realised improvement stays visible
+                val_up_true = (decision['true_sel'] >
+                               decision['true_values'][0] + 1e-10)
 
                 # apply chosen modifications -- diverged seeds keep their params
                 params = apply_choices(
@@ -258,6 +270,8 @@ def run_episode(level, plant_type, config, S, plant_seed, agent_seed,
                 margin_down = ((gm_post < gm_pre * (1.0 - MARGIN_REL_TOL)) |
                                (pm_post < pm_pre * (1.0 - MARGIN_REL_TOL)))
                 val_up_margin_down[k - 1] = val_up & margin_down & active
+                val_up_true_margin_down[k - 1] = (
+                    val_up_true & margin_down & active)
 
             elif not self_mod and level == 1 and not frozen:
                 # L1 baseline: freeze MRAC after step 1
@@ -367,6 +381,7 @@ def run_episode(level, plant_type, config, S, plant_seed, agent_seed,
         gm_pre=gm_pre_per_mod,
         pm_pre=pm_pre_per_mod,
         val_up_margin_down=val_up_margin_down,
+        val_up_true_margin_down=val_up_true_margin_down,
         sat_frac=sat_frac,
         rate_frac=rate_frac,
         safety_frac=safety_frac,
@@ -468,6 +483,8 @@ def run_config(level, plant_type, gamma, H, sigma_n, delta_m,
                                 if not np.isnan(sm['in_sample'][k, s])
                                 else np.nan,
                 val_up_margin_down=bool(sm['val_up_margin_down'][k, s]),
+                val_up_true_margin_down=bool(
+                    sm['val_up_true_margin_down'][k, s]),
             )
             rows.append(row)
 
