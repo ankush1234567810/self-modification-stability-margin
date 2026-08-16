@@ -151,9 +151,10 @@ def main():
             print(f"       eps mean={np.mean(eps):.6f} "
                   f"eps p95={np.nanpercentile(eps, 95):.6f} "
                   f"eps max={np.nanmax(eps):.6f}")
-        viol = sub.bound_violated
-        if viol.sum() > 0:
-            print(f"       *** Theorem 7 VIOLATIONS: {viol.sum()} ***")
+        div = sub.drop_duplicates(subset=['seed', 'gamma_a', 'omega'])
+        if div.unstable.sum() > 0:
+            print(f"       diverged seed-configs: {int(div.unstable.sum())}"
+                  f"/{len(div)}")
 
 
 if __name__ == "__main__":

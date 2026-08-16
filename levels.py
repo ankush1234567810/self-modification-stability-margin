@@ -1,8 +1,12 @@
 """Levels L0–L3 wiring: episode simulation, paired baselines, metric recording.
 
 Each episode is vectorised across *S* seeds.  For every configuration we run
-two paired episodes — self-modifying and baseline (self-mod disabled after
-step 1) — with identical disturbance realisations (same plant RNG seed).
+two paired episodes — self-modifying and baseline — with identical disturbance
+realisations (same plant RNG seed).
+
+NOTE: for L2/L3 the baseline performs ZERO modifications, not one.  Tetek et al.
+Theorem 7 compares pi_t against pi_1; this compares against pi_0.  That is an
+open defect (audit M1), recorded in KNOWN_ISSUES.md, not a fixed one.
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ from controllers import (
 )
 from agent import make_agent_model, epsilon_optimize, apply_choices, rollout
 from metrics import (
-    reward, value_from_step_vec, theorem7_bound,
+    reward, value_from_step_vec,
     compute_margins_vectorized,
 )
 
@@ -435,14 +439,14 @@ def run_config(level, plant_type, gamma, H, sigma_n, delta_m,
             v_bl = bl['V'][s, k]
             D = v_bl - v_sm
 
+            # The Theorem 7 bound comparison was REMOVED, not repaired.
+            # eps_emp is measured over an H-step rollout while D spans the
+            # episode remainder, so the two are not commensurable; and eps_emp
+            # is a max over 8/14 hand-picked candidates, not the sup over
+            # policies the theorem's epsilon requires. See README 'Removed
+            # claims' and KNOWN_ISSUES.md (audit C4). eps_emp is retained and
+            # reported descriptively.
             eps = sm['eps'][k, s]
-            if np.isnan(eps):
-                # No epsilon-optimizer (L0/L1) — Theorem 7 doesn't apply
-                bound = np.nan
-                violated = False
-            else:
-                bound = theorem7_bound(eps, k + 1, gamma)
-                violated = bool(D > bound + 1e-8)
 
             gm = sm['gm'][k, s]
             pm = sm['pm'][k, s]
@@ -465,8 +469,6 @@ def run_config(level, plant_type, gamma, H, sigma_n, delta_m,
                 seed=s, mod_step=k + 1,
                 V_selfmod=v_sm, V_baseline=v_bl, D=D,
                 eps_emp=eps,
-                theorem7_bound=bound,
-                bound_violated=violated,
                 gain_margin=gm, phase_margin=pm,
                 gain_margin_pre=gm_pre, phase_margin_pre=pm_pre,
                 sat_frac=sm['sat_frac'][k, s],

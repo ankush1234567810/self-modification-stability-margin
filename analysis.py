@@ -1,8 +1,31 @@
-"""Analysis: Q1–Q3, L3-vs-L2 comparison, and plots.
+"""Analysis and plots.
 
 Usage:
     python analysis.py                          # load results/sweep_results.csv
     python analysis.py --input results/foo.csv  # custom input
+
+Scope note
+----------
+Three analyses that were present before the Phase 1 audit have been REMOVED
+rather than repaired.  See README section "Removed claims" and KNOWN_ISSUES.md:
+
+  - The Theorem 7 bound comparison (audit C4).  epsilon is measured over an
+    H-step rollout while D is measured over the episode remainder, so the two
+    are not commensurable; and epsilon_emp is a max over 14 hand-picked
+    candidates, not the sup over policies the theorem's epsilon requires.
+    The raw D data is kept and reported descriptively.
+  - The heavy-tail and exponential-growth claims (audit M7, M14).  The medians
+    being fitted alternate in sign, so the model class is invalid, and the
+    "tail" compared a median from one configuration against a max from all of
+    them.  D is now reported descriptively for a single configuration.
+  - The L3-vs-L2 headline (audit C5).  At gamma_a = 1 the L3-exclusive
+    candidates were selected 0/1800 times on Rohrs, so the comparison was L2
+    against L2 under two different RNG streams.
+
+What remains is the question the corrected code can actually answer: with
+correct margins and the Rohrs plant operated in its counterexample regime,
+does self-modification consume stability margin, and does it ever drive
+parameter divergence?
 """
 
 from __future__ import annotations
@@ -15,288 +38,271 @@ import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from scipy.optimize import curve_fit
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 RESULTS_DIR = os.path.join(SCRIPT_DIR, "results")
 
+# The single configuration used wherever one must be named, so that no figure
+# or table silently pools incommensurable discount factors (audit M6).
+REF_GAMMA, REF_H, REF_SIGMA = 0.95, 20, 0.01
+
 
 def load_data(path):
-    df = pd.read_csv(path)
-    return df
+    return pd.read_csv(path)
+
+
+def _fmt(x, nd=4):
+    return "-" if x is None or (isinstance(x, float) and np.isnan(x)) else f"{x:.{nd}f}"
 
 
 # ---------------------------------------------------------------------------
-# Q1: Mean deterioration vs k, with Theorem 7 envelope
+# A. Divergence: does self-modification drive parameter divergence?
 # ---------------------------------------------------------------------------
 
-def analysis_q1(df):
-    print("\n" + "=" * 60)
-    print("Q1: Instantiation — deterioration vs modification step k")
-    print("=" * 60)
+def analysis_divergence(df):
+    print("\n" + "=" * 72)
+    print("A. Divergence -- does self-modification drive parameter divergence?")
+    print("=" * 72)
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5), squeeze=False)
+    roh = df[df.plant == 'rohrs']
+    if len(roh) == 0:
+        print("  no Rohrs rows")
+        return
 
-    for pi, plant in enumerate(['rohrs', 'cstr']):
-        ax = axes[0, pi]
-        for level in [1, 2, 3]:
-            sub = df[(df.plant == plant) & (df.level == level)]
-            if len(sub) == 0:
+    # one row per (config, seed): divergence is an episode-level property
+    per_seed = roh.drop_duplicates(
+        subset=['level', 'gamma', 'H', 'sigma_n', 'gamma_a', 'omega', 'seed'])
+
+    print(f"\n  Fraction of seeds diverging, by level and adaptation gain")
+    print(f"  (Rohrs, all gamma/H/sigma_n pooled -- divergence is a property of")
+    print(f"   the loop, not of the discount factor)\n")
+    print(f"    {'level':>5} {'gamma_a':>8} {'omega':>7} {'n':>7} "
+          f"{'diverged':>9} {'k* med':>7} {'k* min':>7} {'mode':>14}")
+    for lvl in sorted(per_seed.level.unique()):
+        for ga in sorted(per_seed.gamma_a.unique()):
+            for om in sorted(per_seed.omega.unique()):
+                sub = per_seed[(per_seed.level == lvl) &
+                               (per_seed.gamma_a == ga) &
+                               (per_seed.omega == om)]
+                if len(sub) == 0:
+                    continue
+                div = sub[sub.unstable == True]
+                ks = div.k_unstable[div.k_unstable >= 0]
+                modes = sorted(set(div.diverged_by.dropna())) if len(div) else []
+                modes = [m for m in modes if m] or ['-']
+                print(f"    {lvl:>5} {ga:>8.1f} {om:>7.1f} {len(sub):>7} "
+                      f"{len(div)/len(sub):>9.3f} "
+                      f"{_fmt(np.median(ks) if len(ks) else np.nan, 0):>7} "
+                      f"{_fmt(ks.min() if len(ks) else np.nan, 0):>7} "
+                      f"{'/'.join(modes):>14}")
+
+    # k* histogram, only for cells where anything diverged
+    div_cells = per_seed[per_seed.unstable == True]
+    if len(div_cells) > 0:
+        fig, ax = plt.subplots(figsize=(8, 5))
+        for lvl in sorted(div_cells.level.unique()):
+            ks = div_cells[div_cells.level == lvl].k_unstable
+            ks = ks[ks >= 0]
+            if len(ks) == 0:
                 continue
-            grp = sub.groupby('mod_step')
-            k = grp['mod_step'].mean().values
-            D_mean = grp['D'].mean().values
-            D_p95 = grp['D'].apply(lambda x: np.nanpercentile(x, 95)).values
-            ax.plot(k, D_mean, '-o', label=f'L{level}', markersize=4)
-            ax.fill_between(k, D_mean, D_p95, alpha=0.2)
-
-            # Theorem 7 bound (mean eps)
-            if level >= 2:
-                eps_mean = grp['eps_emp'].mean().values
-                gamma_val = sub['gamma'].iloc[0]
-                bound = np.minimum(
-                    eps_mean / gamma_val**(k - 1),
-                    1.0 / (1.0 - gamma_val))
-                ax.plot(k, bound, '--', label=f'L{level} bound', alpha=0.5)
-
-        ax.set_xlabel('Modification step k')
-        ax.set_ylabel('Deterioration D_k = V_baseline - V_selfmod')
-        ax.set_title(f'Q1: {plant.upper()}')
-        ax.legend(fontsize=7)
-        ax.axhline(0, color='gray', linewidth=0.5)
-
-    fig.tight_layout()
-    fig.savefig(os.path.join(RESULTS_DIR, 'q1_deterioration.png'), dpi=150)
-    print(f"  Saved q1_deterioration.png")
-
-    # Summary table
-    for level in [0, 1, 2, 3]:
-        sub = df[df.level == level]
-        if len(sub) == 0:
-            continue
-        D = sub.D.values
-        print(f"  L{level}: D mean={np.nanmean(D):.4f} "
-              f"p95={np.nanpercentile(D, 95):.4f} "
-              f"max={np.nanmax(D):.4f}")
-
-
-# ---------------------------------------------------------------------------
-# Q2: Distribution of D_k, typicality
-# ---------------------------------------------------------------------------
-
-def analysis_q2(df):
-    print("\n" + "=" * 60)
-    print("Q2: Typicality — distribution of D_k over seeds")
-    print("=" * 60)
-
-    # Fixed k = 5, level 2/3, rohrs, gamma=0.95, H=20, sigma=0.01
-    for level in [2, 3]:
-        sub = df[(df.level == level) & (df.plant == 'rohrs') &
-                 (df.gamma == 0.95) & (df.H == 20) &
-                 (df.sigma_n == 0.01) & (df.mod_step == 5)]
-        if len(sub) < 10:
-            continue
-        D = sub.D.values
-        print(f"  L{level} k=5: median={np.median(D):.4f} "
-              f"p95={np.nanpercentile(D, 95):.4f} "
-              f"max={np.nanmax(D):.4f} "
-              f"n={len(D)}")
-
-    # Growth fit: median D_k vs k
-    fig, ax = plt.subplots(figsize=(8, 5))
-    for level, color in [(2, 'blue'), (3, 'red')]:
-        sub = df[(df.level == level) & (df.plant == 'rohrs') &
-                 (df.gamma == 0.95) & (df.H == 20) &
-                 (df.sigma_n == 0.01)]
-        if len(sub) < 10:
-            continue
-        grp = sub.groupby('mod_step')
-        k = grp['mod_step'].mean().values
-        medians = grp['D'].apply(lambda x: np.nanmedian(x)).values
-        p95s = grp['D'].apply(lambda x: np.nanpercentile(x, 95)).values
-
-        ax.plot(k, medians, '-o', color=color, label=f'L{level} median')
-        ax.plot(k, p95s, '--', color=color, label=f'L{level} p95')
-
-        # Exponential fit to median (only if positive growth)
-        if np.all(np.isfinite(medians)) and len(k) >= 3:
-            try:
-                def exp_model(x, a, b):
-                    return a * np.exp(b * x)
-                popt, pcov = curve_fit(exp_model, k, medians,
-                                       p0=[0.01, 0.1], maxfev=5000)
-                perr = np.sqrt(np.diag(pcov))
-                residuals = medians - exp_model(k, *popt)
-                ss_res = np.sum(residuals**2)
-                ss_tot = np.sum((medians - np.mean(medians))**2)
-                r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
-                print(f"  L{level} median fit: {popt[0]:.4f}*exp({popt[1]:.4f}*k) "
-                      f"R²={r2:.3f} (param err: {perr[1]:.4f})")
-                ax.plot(k, exp_model(k, *popt), ':', color=color, alpha=0.5)
-            except Exception as e:
-                print(f"  L{level} fit failed: {e}")
-
-    ax.set_xlabel('Modification step k')
-    ax.set_ylabel('Deterioration D_k')
-    ax.set_title('Q2: Median and p95 growth (Rohrs, γ=0.95, H=20, σ=0.01)')
-    ax.legend(fontsize=8)
-    ax.axhline(0, color='gray', linewidth=0.5)
-    fig.tight_layout()
-    fig.savefig(os.path.join(RESULTS_DIR, 'q2_distribution.png'), dpi=150)
-    print(f"  Saved q2_distribution.png")
-    print(f"  Fit method: scipy curve_fit, exponential model A*exp(B*k)")
-    print(f"  Note: 200 seeds supports distributional claims weakly.")
-
-
-# ---------------------------------------------------------------------------
-# Q3: Stability margins, value-up-margin-down, destabilisation depth
-# ---------------------------------------------------------------------------
-
-def analysis_q3(df):
-    print("\n" + "=" * 60)
-    print("Q3: Physical addition — margins vs self-modification depth")
-    print("=" * 60)
-
-    # Margin evolution
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5), squeeze=False)
-    for pi, plant in enumerate(['rohrs', 'cstr']):
-        ax = axes[0, pi]
-        for level, color in [(2, 'blue'), (3, 'red')]:
-            sub = df[(df.plant == plant) & (df.level == level) &
-                     (df.gamma == 0.95) & (df.H == 20) &
-                     (df.sigma_n == 0.01)]
-            if len(sub) < 10:
-                continue
-            grp = sub.groupby('mod_step')
-            k = grp['mod_step'].mean().values
-            gm = grp['gain_margin'].apply(
-                lambda x: np.nanmedian(x[x < 1e10]) if np.any(x < 1e10) else np.nan
-            ).values
-            ax.plot(k, gm, '-o', color=color, label=f'L{level} GM (median)')
-        ax.set_xlabel('Modification step k')
-        ax.set_ylabel('Gain margin (median, linear)')
-        ax.set_title(f'Q3: {plant.upper()} margins')
-        ax.legend(fontsize=8)
-
-    fig.tight_layout()
-    fig.savefig(os.path.join(RESULTS_DIR, 'q3_margins.png'), dpi=150)
-    print(f"  Saved q3_margins.png")
-
-    # Value-up-margin-down fraction
-    print("\n  Value-up-margin-down fraction (in-sample improves, margin degrades):")
-    for level in [2, 3]:
-        sub = df[(df.level == level) & (df.val_up_margin_down == True)]
-        total = df[(df.level == level) & (df.eps_emp.notna())]
-        if len(total) == 0:
-            continue
-        frac = len(sub) / len(total) if len(total) > 0 else 0
-        print(f"    L{level}: {frac:.3f} ({len(sub)}/{len(total)})")
-
-    # Destabilisation depth k*
-    print("\n  Destabilisation depth k* (where loop first destabilises):")
-    for level in [2, 3]:
-        sub = df[(df.level == level) & (df.unstable == True)]
-        if len(sub) == 0:
-            print(f"    L{level}: no destabilisation observed")
-            continue
-        k_stars = sub.drop_duplicates(subset=['seed'])['k_unstable']
-        k_stars = k_stars[k_stars >= 0]
-        if len(k_stars) == 0:
-            print(f"    L{level}: no destabilisation observed")
-        else:
-            print(f"    L{level}: k* median={np.median(k_stars):.0f} "
-                  f"n_unstable={len(k_stars)}")
-
-
-# ---------------------------------------------------------------------------
-# L3 vs L2 comparison
-# ---------------------------------------------------------------------------
-
-def analysis_l3_vs_l2(df):
-    print("\n" + "=" * 60)
-    print("L3 vs L2: Does modifying the adaptation law make things worse?")
-    print("=" * 60)
-
-    for plant in ['rohrs', 'cstr']:
-        l2 = df[(df.level == 2) & (df.plant == plant)]
-        l3 = df[(df.level == 3) & (df.plant == plant)]
-        if len(l2) == 0 or len(l3) == 0:
-            continue
-
-        D2 = l2.D.values
-        D3 = l3.D.values
-        eps2 = l2.eps_emp.dropna().values
-        eps3 = l3.eps_emp.dropna().values
-
-        print(f"\n  {plant.upper()}:")
-        mD2 = np.nanmean(D2)
-        mD3 = np.nanmean(D3)
-        print(f"    D:  L2 mean={mD2:.4f}  L3 mean={mD3:.4f}  "
-              f"diff={mD3-mD2:.4f}")
-        if len(eps2) > 0 and len(eps3) > 0:
-            me2 = np.mean(eps2)
-            me3 = np.mean(eps3)
-            print(f"    eps: L2 mean={me2:.6f}  "
-                  f"L3 mean={me3:.6f}  "
-                  f"ratio={me3/max(me2, 1e-10):.2f}")
-
-
-# ---------------------------------------------------------------------------
-# Epsilon summary
-# ---------------------------------------------------------------------------
-
-def epsilon_summary(df):
-    print("\n" + "=" * 60)
-    print("Empirical epsilon distribution per configuration")
-    print("=" * 60)
-
-    for level in [2, 3]:
-        for plant in ['rohrs', 'cstr']:
-            sub = df[(df.level == level) & (df.plant == plant)]
-            eps = sub.eps_emp.dropna().values
-            if len(eps) == 0:
-                continue
-            print(f"  L{level} {plant}: eps mean={np.mean(eps):.6f} "
-                  f"p95={np.percentile(eps, 95):.6f} "
-                  f"max={np.max(eps):.6f}")
-
-    # Theorem 7 violations (only for L2/L3 where epsilon-optimizer applies)
-    viol = df[(df.bound_violated == True) & (df.level >= 2)]
-    if len(viol) > 0:
-        # Separate: eps=0 violations (trajectory divergence) vs eps>0
-        v0 = viol[viol.eps_emp == 0]
-        v1 = viol[viol.eps_emp > 0]
-        print(f"\n  Theorem 7 flagged rows (L2/L3): {len(viol)}")
-        print(f"    eps=0 (trajectory divergence, bound=0): {len(v0)}")
-        print(f"    eps>0 (genuine bound exceedance): {len(v1)}")
-        if len(v1) > 0:
-            print(f"      D range: [{v1.D.min():.4f}, {v1.D.max():.4f}]")
-            print(f"      bound range: [{v1.theorem7_bound.min():.4f}, "
-                  f"{v1.theorem7_bound.max():.4f}]")
-        print(f"    Note: paired-trajectory D_k can exceed the same-state bound")
-        print(f"    because the two runs diverge after step 1.")
+            ax.hist(ks, bins=np.arange(0.5, ks.max() + 1.5), alpha=0.55,
+                    label=f'L{lvl} (n={len(ks)})')
+        ax.set_xlabel('Destabilisation depth k* (modification step)')
+        ax.set_ylabel('Seeds')
+        ax.set_title('A: Depth at which the loop first diverges (Rohrs)')
+        ax.legend(fontsize=9)
+        fig.tight_layout()
+        fig.savefig(os.path.join(RESULTS_DIR, 'a_divergence_depth.png'), dpi=150)
+        print("\n  Saved a_divergence_depth.png")
     else:
-        print(f"\n  No Theorem 7 violations (L2/L3).")
+        print("\n  No divergence anywhere -- no k* histogram written.")
 
 
 # ---------------------------------------------------------------------------
-# Main
+# B. Margin consumption
 # ---------------------------------------------------------------------------
+
+def analysis_margins(df):
+    print("\n" + "=" * 72)
+    print("B. Margin consumption -- does self-modification eat stability margin?")
+    print("=" * 72)
+
+    sub = df[(df.plant == 'rohrs') & (df.level >= 2) &
+             (df.gamma == REF_GAMMA) & (df.H == REF_H) &
+             (df.sigma_n == REF_SIGMA)]
+    if len(sub) == 0:
+        print("  no rows at the reference configuration")
+        return
+
+    print(f"\n  Reference config: Rohrs, gamma={REF_GAMMA}, H={REF_H}, "
+          f"sigma_n={REF_SIGMA}")
+    print(f"  Gain margin after modification k (median over seeds, "
+          f"finite values only)\n")
+
+    fig, axes = plt.subplots(1, len(sorted(sub.gamma_a.unique())),
+                             figsize=(5 * sub.gamma_a.nunique(), 4.5),
+                             squeeze=False)
+    for ai, ga in enumerate(sorted(sub.gamma_a.unique())):
+        ax = axes[0, ai]
+        for lvl, color in [(2, 'tab:blue'), (3, 'tab:red')]:
+            for om, ls in [(5.0, '-'), (16.1, '--')]:
+                s = sub[(sub.level == lvl) & (sub.gamma_a == ga) &
+                        (sub.omega == om)]
+                if len(s) < 10:
+                    continue
+                grp = s.groupby('mod_step')['gain_margin']
+                med = grp.apply(
+                    lambda x: np.nanmedian(x[np.isfinite(x)])
+                    if np.any(np.isfinite(x)) else np.nan)
+                ax.plot(med.index.values, med.values, ls, color=color,
+                        marker='o', markersize=3,
+                        label=f'L{lvl} omega={om}')
+        ax.set_xlabel('Modification step k')
+        ax.set_ylabel('Gain margin (median)')
+        ax.set_title(f'gamma_a = {ga}')
+        ax.legend(fontsize=7)
+    fig.tight_layout()
+    fig.savefig(os.path.join(RESULTS_DIR, 'b_margins.png'), dpi=150)
+    print("  Saved b_margins.png")
+
+    # numeric table: first vs last modification step
+    print(f"    {'level':>5} {'gamma_a':>8} {'omega':>7} "
+          f"{'GM k=1':>9} {'GM k=last':>10} {'change':>9}")
+    for lvl in [2, 3]:
+        for ga in sorted(sub.gamma_a.unique()):
+            for om in sorted(sub.omega.unique()):
+                s = sub[(sub.level == lvl) & (sub.gamma_a == ga) &
+                        (sub.omega == om)]
+                if len(s) < 10:
+                    continue
+                fin = s[np.isfinite(s.gain_margin)]
+                if len(fin) == 0:
+                    continue
+                kmin, kmax = fin.mod_step.min(), fin.mod_step.max()
+                g0 = fin[fin.mod_step == kmin].gain_margin.median()
+                g1 = fin[fin.mod_step == kmax].gain_margin.median()
+                print(f"    {lvl:>5} {ga:>8.1f} {om:>7.1f} "
+                      f"{g0:>9.3f} {g1:>10.3f} {g1 - g0:>+9.3f}")
+
+    # believed vs realised value-up / margin-down quadrant
+    print("\n  Value-up & margin-down quadrant (per modification decision):")
+    print(f"    {'level':>5} {'gamma_a':>8} {'omega':>7} "
+          f"{'believed':>9} {'realised':>9} {'n':>8}")
+    for lvl in [2, 3]:
+        for ga in sorted(sub.gamma_a.unique()):
+            for om in sorted(sub.omega.unique()):
+                s = sub[(sub.level == lvl) & (sub.gamma_a == ga) &
+                        (sub.omega == om) & sub.eps_emp.notna()]
+                if len(s) == 0:
+                    continue
+                print(f"    {lvl:>5} {ga:>8.1f} {om:>7.1f} "
+                      f"{s.val_up_margin_down.mean():>9.3f} "
+                      f"{s.val_up_true_margin_down.mean():>9.3f} {len(s):>8}")
+    print("\n  'believed' uses the agent's own noisy scores (self-deception);")
+    print("  'realised' uses the exact rollout on the real plant.")
+
+
+# ---------------------------------------------------------------------------
+# C. Deterioration, reported descriptively
+# ---------------------------------------------------------------------------
+
+def analysis_deterioration(df):
+    print("\n" + "=" * 72)
+    print("C. Deterioration D_k = V_baseline - V_selfmod (descriptive only)")
+    print("=" * 72)
+    print("  No functional form is fitted and no bound is compared against.")
+    print("  See README 'Removed claims' for why (audit C4, M7).")
+
+    # M6: never pool across gamma -- the value scale differs by 10x between
+    # gamma=0.9 and gamma=0.99, so a pooled mean is not a meaningful number.
+    print(f"\n  Per-level summary at gamma={REF_GAMMA}, H={REF_H}, "
+          f"sigma_n={REF_SIGMA} (no pooling across gamma):\n")
+    print(f"    {'plant':>6} {'level':>5} {'gamma_a':>8} {'omega':>7} "
+          f"{'median':>9} {'p05':>9} {'p95':>9} {'n':>7}")
+    ref = df[(df.gamma == REF_GAMMA) & (df.H == REF_H) &
+             (df.sigma_n == REF_SIGMA)]
+    for plant in sorted(ref.plant.unique()):
+        for lvl in sorted(ref.level.unique()):
+            for ga in sorted(ref.gamma_a.unique()):
+                for om in sorted(ref.omega.unique()):
+                    s = ref[(ref.plant == plant) & (ref.level == lvl) &
+                            (ref.gamma_a == ga) & (ref.omega == om)]
+                    if len(s) < 10:
+                        continue
+                    D = s.D.values
+                    print(f"    {plant:>6} {lvl:>5} {ga:>8.1f} {om:>7.1f} "
+                          f"{np.nanmedian(D):>9.4f} "
+                          f"{np.nanpercentile(D, 5):>9.4f} "
+                          f"{np.nanpercentile(D, 95):>9.4f} {len(D):>7}")
+
+    # distribution at one configuration, no fitted model
+    sel = ref[(ref.plant == 'rohrs') & (ref.level == 3) &
+              (ref.gamma_a == 10.0) & (ref.omega == 5.0)]
+    if len(sel) > 10:
+        fig, ax = plt.subplots(figsize=(8, 5))
+        grp = sel.groupby('mod_step')['D']
+        k = np.array(sorted(sel.mod_step.unique()))
+        med = grp.median().values
+        p05 = grp.apply(lambda x: np.nanpercentile(x, 5)).values
+        p95 = grp.apply(lambda x: np.nanpercentile(x, 95)).values
+        ax.plot(k, med, '-o', color='tab:red', label='median')
+        ax.fill_between(k, p05, p95, alpha=0.2, color='tab:red',
+                        label='p05-p95')
+        ax.axhline(0, color='gray', linewidth=0.6)
+        ax.set_xlabel('Modification step k')
+        ax.set_ylabel('D_k = V_baseline - V_selfmod')
+        ax.set_title(f'C: D_k spread, Rohrs L3, gamma={REF_GAMMA}, H={REF_H}, '
+                     f'sigma={REF_SIGMA}, gamma_a=10, omega=5.0')
+        ax.legend(fontsize=9)
+        fig.tight_layout()
+        fig.savefig(os.path.join(RESULTS_DIR, 'c_deterioration.png'), dpi=150)
+        print("\n  Saved c_deterioration.png")
+        print(f"  Median D_k by step: "
+              f"{dict(zip(k.tolist(), np.round(med, 4).tolist()))}")
+
+
+# ---------------------------------------------------------------------------
+# D. Realised optimality gap (descriptive; NOT compared to any bound)
+# ---------------------------------------------------------------------------
+
+def analysis_epsilon(df):
+    print("\n" + "=" * 72)
+    print("D. Realised optimality gap eps_emp (descriptive)")
+    print("=" * 72)
+    print("  eps_emp = max(true_values) - true_value_of_selected, over the")
+    print("  agent's 8 (L2) or 14 (L3) candidates, on an H-step exact rollout.")
+    print("  It is NOT the epsilon of Tetek et al. Theorem 7, which is a sup")
+    print("  over all policies on the infinite-horizon Q. No bound comparison")
+    print("  is made -- see README 'Removed claims'.\n")
+    print(f"    {'plant':>6} {'level':>5} {'gamma_a':>8} "
+          f"{'mean':>10} {'p95':>10} {'max':>10} {'n':>8}")
+    for plant in sorted(df.plant.unique()):
+        for lvl in [2, 3]:
+            for ga in sorted(df.gamma_a.unique()):
+                s = df[(df.plant == plant) & (df.level == lvl) &
+                       (df.gamma_a == ga)]
+                eps = s.eps_emp.dropna().values
+                if len(eps) == 0:
+                    continue
+                print(f"    {plant:>6} {lvl:>5} {ga:>8.1f} "
+                      f"{np.mean(eps):>10.6f} {np.percentile(eps, 95):>10.6f} "
+                      f"{np.max(eps):>10.6f} {len(eps):>8}")
+
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", default=os.path.join(RESULTS_DIR, "sweep_results.csv"))
+    parser.add_argument("--input",
+                        default=os.path.join(RESULTS_DIR, "sweep_results.csv"))
     args = parser.parse_args()
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
     df = load_data(args.input)
     print(f"Loaded {len(df)} rows from {args.input}")
 
-    analysis_q1(df)
-    analysis_q2(df)
-    analysis_q3(df)
-    analysis_l3_vs_l2(df)
-    epsilon_summary(df)
+    analysis_divergence(df)
+    analysis_margins(df)
+    analysis_deterioration(df)
+    analysis_epsilon(df)
 
 
 if __name__ == "__main__":
