@@ -317,6 +317,18 @@ Note the direction of the γ_a = 10 rows: L3 drives the gain margin to 0.03 —
 below 1, i.e. nominally unstable — which is the linear-analysis signature of the
 parameter divergence reported in §3.1.
 
+**Which modification does the damage cannot be answered from the stored
+results**: `chosen`, the selected candidate index, is not a column in
+`sweep_results.csv`, so margin change cannot be attributed per candidate without
+re-running the sweep. What the stored per-step margins do show is that the drop
+is **concentrated, not gradual** — in the headline cell (γ_a = 1, ω = 16.1) a
+single modification step, k = 2, accounts for 54.1% of the total 20.21 fall in
+gain margin, the top two steps (k = 2 and k = 9) for 74.6%, while steps 3–5
+together account for 1.4%; two steps (k = 1 and k = 6) *restore* margin,
+by +1.90 and +4.60. Of the total fall, −16.10 occurs within modification steps
+and −4.11 accumulates between them as θ₂ adapts, so roughly a fifth of the
+margin loss is not attributable to any modification at all.
+
 ### 3.3 Does the agent know it is doing this? No.
 
 Fraction of modification decisions where the agent's value went up **and** the
@@ -338,6 +350,42 @@ is worst: in the divergent γ_a = 50 regime the agent believes it improved on
 ~90% of decisions while the exact rollout says it improved on **none of them**.
 The agent is not trading stability for performance knowingly — it is losing
 stability while believing it is gaining performance.
+
+### 3.3b The believed-vs-realised gap has two confounded explanations
+
+The gap in §3.3 admits two readings that this design cannot separate:
+
+1. **Optimizer's curse** — selection bias from taking the argmax of a noisy
+   score. Should shrink toward zero as scoring noise goes to zero.
+2. **Model bias** — the agent's internal model is simply wrong (δ_m = 0.5
+   replaces the true plant with the nominal first-order design model, discarding
+   the unmodeled block entirely). Should persist at zero scoring noise.
+
+From the existing sweep, believed minus realised value-up-and-margin-down,
+Rohrs L2/L3 pooled across γ, H and ω:
+
+| σ_n | γ_a = 1 | γ_a = 10 | γ_a = 50 |
+|-----|---------|----------|----------|
+| 0.0 | 0.138 | 0.156 | 0.066 |
+| 0.01 | 0.140 | 0.257 | 0.422 |
+| 0.1 | 0.130 | 0.256 | 0.421 |
+
+**The gap does not vanish at σ_n = 0.** At γ_a = 1 it is flat in σ_n (0.138,
+0.140, 0.130). At γ_a = 10 and 50 it is smaller at σ_n = 0 but far from zero at
+γ_a = 10 and clearly nonzero at γ_a = 50.
+
+**This does not identify the mechanism, and no claim is made that it does.**
+σ_n = 0 removes *additive scoring noise* but not model error: at σ_n = 0 the
+agent still scores candidates on the wrong plant, and selecting the argmax of a
+deterministically biased score is itself a form of selection bias. The two
+explanations remain entangled.
+
+**δ_m was never varied.** It is fixed at 0.5 in every one of the 972
+configurations, so the model-bias axis was not swept at all and cannot be
+separated from the curse on this data. Doing so would require sweeping δ_m —
+including δ_m = 0, where the agent's model is the true plant — at σ_n = 0, which
+isolates model bias with scoring noise held out. That experiment has not been
+run.
 
 ### 3.4 Deterioration, reported descriptively
 

@@ -160,13 +160,44 @@ maximum attainable D is ~99.99 — a 20× mismatch. The bound comparison that th
 invalidated has been removed; the two quantities are still reported side by side
 and must not be differenced.
 
-### The optimizer's-curse gap conflates two effects
-`levels.py` (`self_deception` column)
+### The optimizer's-curse gap conflates two effects, and δ_m was never swept
+`levels.py` (`self_deception` column), `experiment.py` (`--delta-m`)
 
 `self_deception = in_sample − true_sel` differences a noisy-model rollout
 against an exact-plant rollout, so it mixes **selection bias** (the optimizer's
 curse proper) with **model bias** (δ_m). No second independent noisy draw exists
 to separate them.
+
+The believed-vs-realised gap reported in README §3.3 has the same two
+explanations, and this design cannot distinguish them. Measured from the sweep,
+believed minus realised (Rohrs L2/L3, pooled over γ, H, ω):
+
+| σ_n | γ_a = 1 | γ_a = 10 | γ_a = 50 |
+|-----|---------|----------|----------|
+| 0.0 | 0.138 | 0.156 | 0.066 |
+| 0.01 | 0.140 | 0.257 | 0.422 |
+| 0.1 | 0.130 | 0.256 | 0.421 |
+
+The gap does not vanish at σ_n = 0, and at γ_a = 1 is flat in σ_n. That is
+suggestive but **not** diagnostic: σ_n = 0 removes additive scoring noise while
+leaving model error intact, and selecting the argmax of a deterministically
+biased score is itself selection bias.
+
+**δ_m is fixed at 0.5 in all 972 configurations.** The model-bias axis was never
+swept, so it cannot be separated from the curse on this data. Separating them
+requires sweeping δ_m — including δ_m = 0, where the agent's model is the true
+plant — with σ_n = 0. That experiment has not been run, and no mechanism claim
+should be made until it is.
+
+### Per-candidate margin attribution is not recoverable from the results file
+`levels.py` (row construction), `results/sweep_results.csv`
+
+`chosen`, the index of the selected candidate, is computed at every modification
+step but never written to the output. Margin change per step is recorded
+(`gain_margin_pre` / `gain_margin`), so *when* margin is lost is answerable, but
+*which modification* lost it is not, without re-running the sweep. This blocks
+the natural follow-up to the margin-consumption finding: ranking candidates by
+total margin consumed.
 
 ---
 
