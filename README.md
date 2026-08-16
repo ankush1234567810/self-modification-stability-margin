@@ -310,8 +310,11 @@ the unmodeled second-order block.
 Margin consumption is the clearest and most robust finding here. It happens
 **even at γ_a = 1, where nothing ever diverges**: nine modifications take the
 gain margin from 24.8 to 2.7 and the phase margin from 77.5° to 10.6° at the
-canonical Rohrs excitation. The loop stays stable for the full episode, but by
-k = 9 it is one modification away from the stability boundary.
+canonical Rohrs excitation — though **about 20% of that fall (−4.11 of −20.21)
+occurs *between* modification steps and is attributable to the adaptation law
+running continuously, not to self-modification**. The loop stays stable for the
+full episode, but by k = 9 it is one modification away from the stability
+boundary.
 
 Note the direction of the γ_a = 10 rows: L3 drives the gain margin to 0.03 —
 below 1, i.e. nominally unstable — which is the linear-analysis signature of the
@@ -348,8 +351,29 @@ real plant.
 Believed exceeds realised in every row. The gap is widest exactly where the loop
 is worst: in the divergent γ_a = 50 regime the agent believes it improved on
 ~90% of decisions while the exact rollout says it improved on **none of them**.
-The agent is not trading stability for performance knowingly — it is losing
-stability while believing it is gaining performance.
+
+**The quadrant figures above overstate margin loss, and the wording is narrowed
+accordingly.** `margin_down` fires when *either* gain margin or phase margin
+drops by more than 1%, so a step that trades one against the other counts as a
+loss. Decomposing all 224,768 flagged Rohrs steps:
+
+| | overall | L2 | L3 | γ_a = 1 | γ_a = 10 | γ_a = 50 |
+|---|---|---|---|---|---|---|
+| **both margins down** | **0.549** | 0.557 | 0.539 | 0.645 | 0.453 | 0.331 |
+| GM down, PM **up** | 0.159 | 0.162 | 0.155 | 0.164 | 0.173 | 0.000 |
+| PM down, GM **up** | 0.293 | 0.281 | 0.306 | 0.191 | 0.374 | 0.669 |
+
+**45.1% of flagged steps are trades, not losses** — one margin improves while
+the other degrades. The share is worst where the numbers are most dramatic: at
+γ_a = 50 only 33.1% of flagged steps lose both margins, and two thirds are
+phase-margin-down / gain-margin-up trades. The k = 2 step in §3.2 is exactly
+this: ΔGM = −10.93 alongside ΔPM = +24.48.
+
+So the defensible claim is **not** "the agent degrades stability on 67–89% of
+decisions". It is: on roughly 55% of flagged decisions it degrades *both*
+margins, on the remaining 45% it reallocates between them, and in every case it
+believes it is improving. The believed-versus-realised gap — the actual point of
+this section — is unaffected, since both columns use the same flag.
 
 ### 3.3b The believed-vs-realised gap has two confounded explanations
 

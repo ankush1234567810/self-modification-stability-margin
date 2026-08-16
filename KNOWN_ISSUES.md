@@ -189,6 +189,20 @@ requires sweeping δ_m — including δ_m = 0, where the agent's model is the tr
 plant — with σ_n = 0. That experiment has not been run, and no mechanism claim
 should be made until it is.
 
+### `margin_down` conflates margin loss with margin reallocation
+`levels.py` (`margin_down`, `MARGIN_REL_TOL`)
+
+The flag fires when **either** gain margin or phase margin falls by more than
+1%, so a modification that trades one against the other is counted as a
+degradation. Across all 224,768 flagged Rohrs steps, only **54.9%** have both
+margins down; 15.9% are GM-down/PM-up and 29.3% are PM-down/GM-up. At γ_a = 50
+the flag is dominated by trades — 66.9% PM-down/GM-up, 33.1% both.
+
+A single scalar robustness measure (a sensitivity peak, a disc margin, or a
+distance-to-instability) would not have this ambiguity. The flag was left as-is
+because changing it would alter every quadrant number after the fact; the
+decomposition is reported in README §3.3 instead.
+
 ### Per-candidate margin attribution is not recoverable from the results file
 `levels.py` (row construction), `results/sweep_results.csv`
 
