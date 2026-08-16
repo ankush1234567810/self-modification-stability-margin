@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(python -c from plants import *; from controllers import *; from metrics import *; from agent import *; from levels import *; print('All imports OK'))",
+      "Shell(python -u analysis.py 2 >& 1)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}
