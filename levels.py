@@ -56,6 +56,10 @@ from metrics import (
 THETA2_DIVERGE = 50.0
 SUSTAIN_SECONDS = 0.5
 
+# Relative margin drop that counts as "margin down" for the value-up/margin-down
+# quadrant.  1% of the pre-modification margin, matching the original intent.
+MARGIN_REL_TOL = 0.01
+
 
 # ---------------------------------------------------------------------------
 # Configuration helpers
@@ -180,13 +184,11 @@ def run_episode(level, plant_type, config, S, plant_seed, agent_seed,
     true_sel_per_mod = np.full((n_mod, S), np.nan)
     true_best_per_mod = np.full((n_mod, S), np.nan)
     chosen_per_mod = np.full((n_mod, S), -1, dtype=int)
-    gm_per_mod = np.full((n_mod, S), np.nan)
+    gm_per_mod = np.full((n_mod, S), np.nan)      # margin AFTER modification k
     pm_per_mod = np.full((n_mod, S), np.nan)
+    gm_pre_per_mod = np.full((n_mod, S), np.nan)  # margin BEFORE modification k
+    pm_pre_per_mod = np.full((n_mod, S), np.nan)
     val_up_margin_down = np.zeros((n_mod, S), dtype=bool)
-
-    # previous margins (for detecting value-up-margin-down)
-    prev_gm = np.full(S, np.inf)
-    prev_pm = np.full(S, np.inf)
 
     frozen = False  # for L1 baseline: freeze MRAC after step 1
 
@@ -197,17 +199,25 @@ def run_episode(level, plant_type, config, S, plant_seed, agent_seed,
         if t > 0 and t % steps_per_mod == 0:
             k = t // steps_per_mod  # 1-indexed modification step
 
-            # compute current margins (L2/L3 only — Q3)
+            # Margin BEFORE this modification (L2/L3 only — Q3).
+            # The post-modification margin is computed below, after
+            # apply_choices, so that the pre/post pair brackets exactly one
+            # modification.  Previously margin_down compared this step's margin
+            # against the PREVIOUS step's, which attributed modification k-1's
+            # effect to modification k's decision.
             if level >= 2:
                 # pass the LIVE adapted MRAC gain, not params.theta2_init
-                gm, pm = compute_margins_vectorized(
+                gm_pre, pm_pre = compute_margins_vectorized(
                     episode_plant, params, S,
                     theta2=ctrl_state[:, TH2])
-                gm_per_mod[k - 1] = gm
-                pm_per_mod[k - 1] = pm
             else:
-                gm = np.full(S, np.inf)
-                pm = np.full(S, np.inf)
+                gm_pre = np.full(S, np.inf)
+                pm_pre = np.full(S, np.inf)
+            gm_pre_per_mod[k - 1] = gm_pre
+            pm_pre_per_mod[k - 1] = pm_pre
+            # default when no modification is applied (baseline arm, L0/L1,
+            # diverged seeds): post == pre
+            gm_post, pm_post = gm_pre.copy(), pm_pre.copy()
 
             # M5: self-modification is gated PER SEED, not by np.any(unstable).
             # The old global gate let one diverged seed halt self-modification
@@ -230,19 +240,24 @@ def run_episode(level, plant_type, config, S, plant_seed, agent_seed,
                 true_best_per_mod[k - 1] = decision['true_best'] * nan_if_dead
                 chosen_per_mod[k - 1] = np.where(active, decision['chosen'], -1)
 
-                # value-up-margin-down detection
-                val_up = decision['true_sel'] > decision['true_best'] * 0.99
-                # actually: did the accepted mod improve in-sample value?
-                # use: true_sel vs true_values[0] (no_change)
+                # did the chosen modification beat leaving the controller alone?
                 no_change_val = decision['true_values'][0]
                 val_up = decision['true_sel'] > no_change_val + 1e-10
-                margin_down = (gm < prev_gm * 0.99) | (pm < prev_pm * 0.99)
-                val_up_margin_down[k - 1] = val_up & margin_down
 
                 # apply chosen modifications -- diverged seeds keep their params
                 params = apply_choices(
                     params, candidates,
                     np.where(active, decision['chosen'], 0))
+
+                # Margin AFTER this modification, from the same controller
+                # state.  pre and post now bracket exactly one modification, so
+                # margin_down is attributable to decision k and nothing else.
+                gm_post, pm_post = compute_margins_vectorized(
+                    episode_plant, params, S,
+                    theta2=ctrl_state[:, TH2])
+                margin_down = ((gm_post < gm_pre * (1.0 - MARGIN_REL_TOL)) |
+                               (pm_post < pm_pre * (1.0 - MARGIN_REL_TOL)))
+                val_up_margin_down[k - 1] = val_up & margin_down & active
 
             elif not self_mod and level == 1 and not frozen:
                 # L1 baseline: freeze MRAC after step 1
@@ -251,8 +266,8 @@ def run_episode(level, plant_type, config, S, plant_seed, agent_seed,
                 params.sigma = np.zeros(S)
                 frozen = True
 
-            prev_gm = gm.copy()
-            prev_pm = pm.copy()
+            gm_per_mod[k - 1] = gm_post
+            pm_per_mod[k - 1] = pm_post
 
         # --- simulation step ---
         y = episode_plant.output(x)
@@ -349,6 +364,8 @@ def run_episode(level, plant_type, config, S, plant_seed, agent_seed,
         chosen=chosen_per_mod,
         gm=gm_per_mod,
         pm=pm_per_mod,
+        gm_pre=gm_pre_per_mod,
+        pm_pre=pm_pre_per_mod,
         val_up_margin_down=val_up_margin_down,
         sat_frac=sat_frac,
         rate_frac=rate_frac,
@@ -414,10 +431,16 @@ def run_config(level, plant_type, gamma, H, sigma_n, delta_m,
 
             gm = sm['gm'][k, s]
             pm = sm['pm'][k, s]
+            gm_pre = sm['gm_pre'][k, s]
+            pm_pre = sm['pm_pre'][k, s]
             if np.isnan(gm):
                 gm = np.inf
             if np.isnan(pm):
                 pm = np.inf
+            if np.isnan(gm_pre):
+                gm_pre = np.inf
+            if np.isnan(pm_pre):
+                pm_pre = np.inf
 
             row = dict(
                 config_hash=chash,
@@ -430,6 +453,7 @@ def run_config(level, plant_type, gamma, H, sigma_n, delta_m,
                 theorem7_bound=bound,
                 bound_violated=violated,
                 gain_margin=gm, phase_margin=pm,
+                gain_margin_pre=gm_pre, phase_margin_pre=pm_pre,
                 sat_frac=sm['sat_frac'][k, s],
                 rate_frac=sm['rate_frac'][k, s],
                 safety_frac=sm['safety_frac'][k, s],
