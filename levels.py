@@ -158,8 +158,18 @@ def run_episode(level, plant_type, config, S, plant_seed, agent_seed,
     breach_run = np.zeros(S, dtype=int)
     diverged_by = np.full(S, "", dtype=object)
 
-    # modification step records
-    n_mod = n_steps // steps_per_mod
+    # Modification step records.
+    # Modifications occur at t = steps_per_mod, 2*steps_per_mod, ... while
+    # t < n_steps, i.e. k = 1 .. (n_steps-1)//steps_per_mod.  The old
+    # n_steps//steps_per_mod overcounted by one whenever n_steps is an exact
+    # multiple: with n_steps=1000, steps_per_mod=100 the loop runs t=0..999 so
+    # the last modification is at t=900 (k=9), but n_mod was 10.  That phantom
+    # row carried eps=NaN, chosen=-1 and -- because mod_steps was clipped to
+    # n_steps-1 -- a value V computed from a SINGLE reward sample rather than an
+    # episode remainder.  It was 21,600 rows of the sweep and, with the stale
+    # eps=0.0 in the committed CSV, the single largest source of spurious
+    # Theorem 7 bound violations.
+    n_mod = (n_steps - 1) // steps_per_mod
     mod_records = []
     candidates = get_candidates(level)
     n_cand = len(candidates)
@@ -312,9 +322,10 @@ def run_episode(level, plant_type, config, S, plant_seed, agent_seed,
 
         u_prev = u_sat.copy()
 
-    # compute values at each modification step
+    # compute values at each modification step (every one is a real step now,
+    # so no clipping is needed and every V_k spans a genuine episode remainder)
     mod_steps = np.arange(1, n_mod + 1) * steps_per_mod
-    mod_steps = np.clip(mod_steps, 0, n_steps - 1)
+    assert mod_steps.max() < n_steps, "phantom modification step"
     V_self = value_from_step_vec(rewards, mod_steps, gamma)
 
     # constraint summaries (cumulative up to each mod step)
