@@ -21,7 +21,10 @@ def test_epsilon_zero_no_deterioration():
         level=2, plant_type="rohrs",
         gamma=0.99, H=500, sigma_n=0.0, delta_m=0.0,
         n_seeds=10, dt=0.01, T_episode=5.0, T_mod=1.0,
-        ep_noise=0.0, base_seed=42)
+        ep_noise=0.0, base_seed=42,
+        # pinned so this test is hermetic: it exercises the epsilon-optimizer,
+        # not the sweep's Rohrs-excitation defaults
+        gamma_a=1.0, omega=5.0)
 
     Ds = [r['D'] for r in rows]
     eps = [r['eps_emp'] for r in rows if not np.isnan(r['eps_emp'])]
@@ -51,7 +54,8 @@ def test_epsilon_zero_cstr():
         level=2, plant_type="cstr",
         gamma=0.99, H=500, sigma_n=0.0, delta_m=0.0,
         n_seeds=10, dt=0.01, T_episode=5.0, T_mod=1.0,
-        ep_noise=0.0, base_seed=123)
+        ep_noise=0.0, base_seed=123,
+        gamma_a=1.0, omega=5.0)
 
     Ds = [r['D'] for r in rows]
     eps = [r['eps_emp'] for r in rows if not np.isnan(r['eps_emp'])]

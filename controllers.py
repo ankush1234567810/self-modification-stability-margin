@@ -76,7 +76,7 @@ class ControllerParams:
         )
 
     @classmethod
-    def default(cls, S, level, Kp=0.5, Ki=1.0, Kd=0.3, a_m=2.0):
+    def default(cls, S, level, Kp=0.5, Ki=1.0, Kd=0.3, a_m=2.0, gamma_a=1.0):
         mrac = level >= 1
         return cls(
             S=S,
@@ -89,7 +89,7 @@ class ControllerParams:
             lead_on=np.full(S, False),
             filter_on=np.full(S, False),
             mrac_on=np.full(S, mrac),
-            gamma_a=np.full(S, 1.0),
+            gamma_a=np.full(S, float(gamma_a)),
             sigma=np.full(S, 0.01),
             dead_zone=np.full(S, 0.0),
             theta1_init=np.full(S, 1.0),

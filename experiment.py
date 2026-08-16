@@ -25,8 +25,16 @@ RESULTS_DIR = os.path.join(SCRIPT_DIR, "results")
 def run_sweep(seeds=200, levels=None, gammas=None, Hs=None,
               sigma_ns=None, plants=None, delta_m=0.5,
               dt=0.01, T_episode=10.0, T_mod=1.0,
-              w_e=1.0, w_u=0.1, ep_noise=0.01, base_seed=42):
-    """Run the full sweep and return a DataFrame."""
+              w_e=1.0, w_u=0.1, ep_noise=0.01, base_seed=42,
+              gamma_as=None, omegas=None):
+    """Run the full sweep and return a DataFrame.
+
+    *gamma_as* is the MRAC adaptation gain and *omegas* the Rohrs excitation
+    frequency.  Both are swept so that the Rohrs counterexample is exercised in
+    the regime where it is actually a counterexample: gamma_a = 1 is quiescent,
+    gamma_a = 50 diverges, and 16.1 rad/s is the canonical excitation for the
+    unmodeled block (poles at -15 +/- 2j).
+    """
     if levels is None:
         levels = [0, 1, 2, 3]
     if gammas is None:
@@ -37,32 +45,47 @@ def run_sweep(seeds=200, levels=None, gammas=None, Hs=None,
         sigma_ns = [0.0, 0.01, 0.1]
     if plants is None:
         plants = ["rohrs", "cstr"]
+    if gamma_as is None:
+        gamma_as = [1.0, 10.0, 50.0]
+    if omegas is None:
+        omegas = [5.0, 16.1]
 
     all_rows = []
-    n_configs = (len(levels) * len(gammas) * len(Hs) *
-                 len(sigma_ns) * len(plants))
-    ci = 0
-    t0 = time.time()
-
+    combos = []
     for level in levels:
         for gamma in gammas:
             for H in Hs:
                 for sigma_n in sigma_ns:
                     for plant in plants:
-                        ci += 1
-                        cfg_seed = base_seed + ci * 10000
-                        rows = run_config(
-                            level=level, plant_type=plant,
-                            gamma=gamma, H=H, sigma_n=sigma_n,
-                            delta_m=delta_m, n_seeds=seeds,
-                            dt=dt, T_episode=T_episode, T_mod=T_mod,
-                            w_e=w_e, w_u=w_u, ep_noise=ep_noise,
-                            base_seed=cfg_seed)
-                        all_rows.extend(rows)
-                        elapsed = time.time() - t0
-                        print(f"  [{ci}/{n_configs}] L{level} γ={gamma} "
-                              f"H={H} σ={sigma_n} {plant} "
-                              f"({elapsed:.1f}s)")
+                        for ga in gamma_as:
+                            for om in omegas:
+                                # omega only shapes the Rohrs reference; the
+                                # CSTR uses a setpoint step, so sweeping it
+                                # there would only duplicate configurations.
+                                if plant != "rohrs" and om != omegas[0]:
+                                    continue
+                                combos.append(
+                                    (level, gamma, H, sigma_n, plant, ga, om))
+
+    n_configs = len(combos)
+    ci = 0
+    t0 = time.time()
+
+    for (level, gamma, H, sigma_n, plant, ga, om) in combos:
+        ci += 1
+        cfg_seed = base_seed + ci * 10000
+        rows = run_config(
+            level=level, plant_type=plant,
+            gamma=gamma, H=H, sigma_n=sigma_n,
+            delta_m=delta_m, n_seeds=seeds,
+            dt=dt, T_episode=T_episode, T_mod=T_mod,
+            w_e=w_e, w_u=w_u, ep_noise=ep_noise,
+            base_seed=cfg_seed, gamma_a=ga, omega=om)
+        all_rows.extend(rows)
+        elapsed = time.time() - t0
+        print(f"  [{ci}/{n_configs}] L{level} γ={gamma} "
+              f"H={H} σ={sigma_n} {plant} γ_a={ga} ω={om} "
+              f"({elapsed:.1f}s)")
 
     df = pd.DataFrame(all_rows)
     total = time.time() - t0
@@ -85,6 +108,12 @@ def main():
                         default=[0.0, 0.01, 0.1])
     parser.add_argument("--plants", type=str, nargs="+",
                         default=["rohrs", "cstr"])
+    parser.add_argument("--gamma-as", type=float, nargs="+",
+                        default=[1.0, 10.0, 50.0],
+                        help="MRAC adaptation gains to sweep")
+    parser.add_argument("--omegas", type=float, nargs="+",
+                        default=[5.0, 16.1],
+                        help="Rohrs excitation frequencies (rad/s)")
     parser.add_argument("--delta-m", type=float, default=0.5)
     parser.add_argument("--dt", type=float, default=0.01)
     parser.add_argument("--T-episode", type=float, default=10.0)
@@ -100,7 +129,8 @@ def main():
         Hs=args.Hs, sigma_ns=args.sigma_ns, plants=args.plants,
         delta_m=args.delta_m, dt=args.dt,
         T_episode=args.T_episode, T_mod=args.T_mod,
-        base_seed=args.base_seed)
+        base_seed=args.base_seed,
+        gamma_as=args.gamma_as, omegas=args.omegas)
 
     out = args.output or os.path.join(RESULTS_DIR, "sweep_results.csv")
     df.to_csv(out, index=False)
