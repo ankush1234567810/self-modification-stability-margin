@@ -85,6 +85,14 @@ def rk4_step(f, t, state, dt):
 # Rohrs counterexample plant
 # ---------------------------------------------------------------------------
 
+# Rate at which x2 tracks x1 in the nominal (unmodeled=False) model.  The design
+# model asserts G2(s) ~ 1 (its DC gain is exactly 1), so y = x2 should follow
+# x1 with no dynamics of interest.  100 rad/s is 100x the nominal pole and 6.6x
+# the 15.13 rad/s unmodeled corner, while |lambda|*dt = 1.0 at dt = 0.01 keeps
+# it comfortably inside the RK4 real-axis stability limit of ~2.785.
+_NOMINAL_PASSTHROUGH_RATE = 100.0
+
+
 class RohrsPlant:
     """Rohrs, Valavani, Athons & Stein (1985) counterexample plant.
 
@@ -101,9 +109,10 @@ class RohrsPlant:
         x3  : velocity state of G2
         y = x2
 
-    When ``unmodeled=False`` the plant collapses to the nominal first-order
-    model with state [x1], y = x1.  This is used for Test 1 (margins on the
-    nominal loop) and for the agent's internal model.
+    When ``unmodeled=False`` the fast block is replaced by a unit passthrough,
+    giving the nominal first-order model 2/(s+1) at the output.  The state
+    layout stays (S, 3) and the output stays y = x2 so that the agent's internal
+    model is state- and measurement-compatible with the real plant.
     """
 
     def __init__(self, unmodeled=True, dt=0.01, noise_std=0.0):
@@ -112,34 +121,47 @@ class RohrsPlant:
         self.noise_std = noise_std
         self.n_inputs = 1
         self.n_outputs = 1
-        self.n_states = 3 if unmodeled else 1
+        # The state vector is always length 3 so that the nominal model and the
+        # full plant are state-compatible.  With unmodeled=False the fast block
+        # is replaced by a unit passthrough (x2 tracks x1, x3 = 0) rather than
+        # being deleted, so the agent's internal model can be initialised from
+        # the real plant's state and still measure the SAME state variable.
+        # Previously n_states was 1 here, which meant (a) rk4_step computed
+        # (S,3) + (dt/6)*(S,1) and silently BROADCAST the first derivative into
+        # x2 and x3, and (b) output() returned x1 while the real plant returns
+        # x2, so the agent scored candidates against a different signal than the
+        # one it was controlling.
+        self.n_states = 3
 
     # -- continuous-time dynamics (vectorised) ------------------------------
 
     def dynamics(self, t, state, u, rng=None):
-        """state: (S, n_states), u: (S, 1) -> dstate: (S, n_states)."""
-        if not self.unmodeled:
-            x1 = state[:, 0:1]
-            dx1 = -x1 + 2.0 * u
-            ds = dx1
-            if self.noise_std > 0 and rng is not None:
-                ds = ds + self.noise_std * rng.standard_normal(size=ds.shape)
-            return ds
-
+        """state: (S, 3), u: (S, 1) -> dstate: (S, 3)."""
         x1 = state[:, 0:1]
         x2 = state[:, 1:2]
         x3 = state[:, 2:3]
         dx1 = -x1 + 2.0 * u
-        dx2 = x3
-        dx3 = 229.0 * x1 - 229.0 * x2 - 30.0 * x3
+
+        if self.unmodeled:
+            # G2(s) = 229 / (s^2 + 30 s + 229)
+            dx2 = x3
+            dx3 = 229.0 * x1 - 229.0 * x2 - 30.0 * x3
+        else:
+            # Nominal design model: G2(s) = 1 (unit passthrough).  x2 is driven
+            # to track x1 on a timescale far faster than the 1 rad/s nominal
+            # pole, so y = x2 reproduces the first-order model 2/(s+1) while
+            # keeping the state layout identical to the full plant.
+            dx2 = _NOMINAL_PASSTHROUGH_RATE * (x1 - x2)
+            dx3 = -x3
+
         ds = np.concatenate([dx1, dx2, dx3], axis=1)
         if self.noise_std > 0 and rng is not None:
             ds = ds + self.noise_std * rng.standard_normal(size=ds.shape)
         return ds
 
     def output(self, state):
-        if not self.unmodeled:
-            return state[:, 0:1]
+        # y = x2 for both the full plant and the nominal model, so the agent's
+        # internal model measures the same state variable as the real plant.
         return state[:, 1:2]
 
     def initial_state(self, S):
