@@ -14,7 +14,7 @@ import json
 from plants import RohrsPlant, CSTRPlant, Constraints, rk4_step
 from controllers import (
     ControllerParams, controller_compute, controller_dynamics,
-    controller_initial_state, get_candidates,
+    controller_initial_state, get_candidates, TH2,
 )
 from agent import make_agent_model, epsilon_optimize, apply_choices, rollout
 from metrics import (
@@ -139,8 +139,10 @@ def run_episode(level, plant_type, config, S, plant_seed, agent_seed,
 
             # compute current margins (L2/L3 only — Q3)
             if level >= 2:
+                # pass the LIVE adapted MRAC gain, not params.theta2_init
                 gm, pm = compute_margins_vectorized(
-                    episode_plant, params, S)
+                    episode_plant, params, S,
+                    theta2=ctrl_state[:, TH2])
                 gm_per_mod[k - 1] = gm
                 pm_per_mod[k - 1] = pm
             else:

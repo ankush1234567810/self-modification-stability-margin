@@ -202,15 +202,22 @@ def controller_tf(ps, s_var):
 
     In the feedback loop the reference is zero for margin analysis, so the
     controller reduces to the feedback path  u = -C_fb * y.
-    For PI:  C_fb = Kp + Ki/s
-    For MRAC: C_fb = -theta2  (static gain from y to u)
+    For PI:   C_fb = Kp
+    For MRAC: C_fb = -theta2  (output-feedback gain from y to u)
+    Integral action is ADDITIVE on top of either path, matching
+    ``controller_compute``: C_fb += Ki/s when integral_on.
+
+    ``ps['theta2']`` (the live adapted gain) is used when present; otherwise
+    ``ps['theta2_init']``, which is only correct before adaptation starts.
     """
     if ps['mrac_on']:
-        C = -ps['theta2_init']  # u = theta1*r + theta2*y → feedback gain = theta2
+        # u = theta1*r + theta2*y → feedback gain = theta2
+        C = -ps.get('theta2', ps['theta2_init'])
     else:
         C = ps['Kp']
-        if ps['integral_on']:
-            C = C + ps['Ki'] / s_var
+
+    if ps['integral_on']:
+        C = C + ps['Ki'] / s_var
 
     if ps['lead_on']:
         Kd = ps['Kd']

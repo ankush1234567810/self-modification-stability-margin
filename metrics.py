@@ -88,12 +88,32 @@ def _eval_tf_on_grid(num_coeffs, den_coeffs, omega):
     return num / den
 
 
-def compute_margins_vectorized(plant, params, S, n_freq=500):
+def compute_margins_vectorized(plant, params, S, n_freq=500, theta2=None):
     """Compute gain margin and phase margin for *S* seeds simultaneously.
 
     Fully vectorised: evaluates L(jω) = C(jω) * G(jω) on a log-spaced
     frequency grid for all seeds at once, then finds gain and phase crossovers
     by sign-change detection with linear interpolation.
+
+    *theta2* is the LIVE adapted MRAC output-feedback gain, ``ctrl_state[:, TH2]``,
+    shape (S,).  It must be supplied whenever any seed has ``mrac_on`` set,
+    because that gain moves every step; ``params.theta2_init`` is only the value
+    at t = 0 and is never updated by the self-modification machinery.  When
+    omitted it falls back to ``params.theta2_init``, which is correct only for
+    a controller that has not yet adapted.
+
+    The controller model here must mirror ``controllers.controller_compute``
+    term for term:
+        u = (mrac_on ? theta1*r + theta2*y : Kp*e)
+            + integral_on * Ki * integral(e)
+            + lead_on * Kd/tau * (e - lead_filt)
+        u = filter_on ? out_filt : u
+    so the feedback path seen by y is
+        C = (mrac_on ? -theta2 : Kp) + integral_on * Ki/s
+            + lead_on * Kd*s/(lead_tau*s + 1)
+        C = filter_on ? C/(filter_tau*s + 1) : C
+    Note in particular that integral action is ADDITIVE and applies on the MRAC
+    path too -- it is not an alternative to it.
 
     Returns (gm, pm) arrays of shape (S,).
     """
@@ -117,19 +137,20 @@ def compute_margins_vectorized(plant, params, S, n_freq=500):
     Kd = np.asarray(params.Kd)[:, None]
     lead_tau = np.asarray(params.lead_tau)[:, None]
     filter_tau = np.asarray(params.filter_tau)[:, None]
-    th2 = np.asarray(params.theta2_init)[:, None]
+    if theta2 is None:
+        theta2 = params.theta2_init
+    th2 = np.asarray(theta2).reshape(-1)[:, None]
 
     s_b = s[None, :]  # (1, n_freq)
 
-    # MRAC: C = -theta2 (static gain)
-    C_mrac = -th2 * np.ones_like(s_b)
-    # PI: C = Kp + Ki/s
-    C_pi = Kp + Ki / s_b
-
+    # proportional/MRAC static path: -theta2 under MRAC, Kp under PI
     mrac_on = np.asarray(params.mrac_on)[:, None]
-    C = np.where(mrac_on, C_mrac, C_pi)
+    C = np.where(mrac_on, -th2, Kp) * np.ones_like(s_b)
 
-    # integral action (only for PI path, already included via Ki/s)
+    # integral action: ADDITIVE, and active on the MRAC path too
+    integral_on = np.asarray(params.integral_on)[:, None]
+    C = C + np.where(integral_on, Ki / s_b, 0.0)
+
     # lead term: Kd * s / (tau*s + 1)
     lead_on = np.asarray(params.lead_on)[:, None]
     lead = Kd * s_b / (lead_tau * s_b + 1)
@@ -209,11 +230,13 @@ def _controller_freq_resp(ps, s):
     Returns complex array same shape as s.
     """
     if ps['mrac_on']:
-        C = np.full_like(s, -ps['theta2_init'], dtype=complex)
+        C = np.full_like(s, -ps.get('theta2', ps['theta2_init']), dtype=complex)
     else:
         C = np.full_like(s, ps['Kp'], dtype=complex)
-        if ps['integral_on']:
-            C = C + ps['Ki'] / s
+
+    # integral action is additive and applies on the MRAC path too
+    if ps['integral_on']:
+        C = C + ps['Ki'] / s
 
     if ps['lead_on']:
         Kd = ps['Kd']
@@ -241,13 +264,15 @@ def compute_margins_single(plant, ps, s_var=None):
         A, B, C, D = plant.linearise(0.8)
         g = ct.ss2tf(A, B, C, D)
 
-    # build controller TF
+    # build controller TF (mirrors controllers.controller_compute)
     if ps['mrac_on']:
-        C = -ps['theta2_init']  # static gain
+        C = -ps.get('theta2', ps['theta2_init'])  # live adapted gain if given
     else:
         C = ps['Kp']
-        if ps['integral_on']:
-            C = C + ps['Ki'] / s_var
+
+    # integral action is additive and applies on the MRAC path too
+    if ps['integral_on']:
+        C = C + ps['Ki'] / s_var
 
     if ps['lead_on']:
         C = C + ps['Kd'] * s_var / (ps['lead_tau'] * s_var + 1)
