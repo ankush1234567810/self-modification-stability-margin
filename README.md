@@ -76,8 +76,16 @@ structural no-ops because `dead_zone` initialises to 0 — an unfixed defect
 (KNOWN_ISSUES, C5 residual).
 
 Baseline for every comparison: same level, same seed, same disturbance
-realisation, self-modification never applied. **Note this is π₀, not the π₁ that
-Theorem 7 compares against** (KNOWN_ISSUES M1).
+realisation, self-modification never applied.
+
+> **The contrast is modify-vs-never-modify, not π_t vs π_1.** Tětek et al.
+> Theorem 7 compares the policy after *t* self-modifications against the policy
+> after **one**. The baseline here performs **zero** modifications, so every
+> D_k and every divergence comparison in this repository contrasts a
+> self-modifying agent against a *never*-modifying one. It is π_t vs π₀. This
+> is an unfixed defect (KNOWN_ISSUES M1), not a modelling choice, and it is one
+> of the reasons the Theorem 7 comparison was withdrawn (§5.1). Read every
+> "baseline" in §3 as "never modifies".
 
 ### Operating regime
 
@@ -143,7 +151,7 @@ then `python analysis.py`.
 pre-audit margin was computed on a reversed polynomial and is unrelated to
 these.
 
-### 3.1 Does self-modification drive parameter divergence? Yes — and only self-modification does.
+### 3.1 Does self-modification drive parameter divergence? Yes — but not because self-modification is inherently destabilising.
 
 Fraction of seeds whose loop diverges, Rohrs, pooled across γ / H / σ_n
 (divergence is a property of the loop, not of the discount factor).
@@ -162,6 +170,11 @@ self-modification is not the cause. The γ_a = 1 column is quiescent. The
 load-bearing column is **γ_a = 10**, where the frozen adaptive controller (L1)
 is stable in 10,800/10,800 seed-configurations (5400 per ω) while
 self-modifying agents are not.
+
+> **This does not mean self-modification is inherently destabilising.** See
+> [§3.1c](#31c-the-mechanism-the-agent-walks-across-a-boundary-it-cannot-see),
+> which reports a control that rules that reading out. The agent moves γ_a to a
+> value that is unstable *for any controller*, self-modifying or not.
 
 Median destabilisation depth k\* at γ_a = 10: **5** for L2 (min 4, max 6),
 **4–6** for L3 (min 3, max 9). Divergence takes several modification steps to
@@ -199,6 +212,56 @@ while L2 is 0.000. That contrast is qualitative and all-or-nothing, so the
 unpaired-noise confound between L2 and L3 (KNOWN_ISSUES, C5 residual) cannot
 manufacture it. A longer planning horizon does not protect an agent that can
 rewrite its own adaptation law.
+
+### 3.1c The mechanism: the agent walks across a boundary it cannot see
+
+γ_a is both a swept configuration dimension and a parameter L3 can modify. That
+makes the §3.1 comparison ambiguous, so it was tested directly: **run a
+non-self-modifying controller started at each γ_a and see where it diverges on
+its own.** L1 with adaptation live and self-modification never applied, Rohrs,
+200 seeds, γ = 0.95, H = 20, σ_n = 0.01:
+
+| γ_a | 10 | 11 | 12 | 13 | 14 | **15** | 16 | **18** | 20 | 30 | 50 |
+|-----|----|----|----|----|----|----|----|----|----|----|----|
+| ω = 5.0 | 0/200 | 0/200 | 0/200 | 0/200 | 0/200 | 0/200 | 0/200 | **200/200** | 200/200 | 200/200 | 200/200 |
+| ω = 16.1 | 0/200 | 0/200 | 0/200 | 0/200 | 0/200 | **200/200** | 200/200 | 200/200 | 200/200 | 200/200 | 200/200 |
+
+**There is a hard stability boundary in γ_a at roughly 14–15 (ω = 16.1) and
+16–18 (ω = 5.0), independent of self-modification.** L3 walks γ_a from 10 to
+20–80 — well past it.
+
+So the correct reading of §3.1 is **not** "self-modification destabilises the
+loop". It is:
+
+> The agent's objective contains tracking error and control effort and
+> **contains no stability term**. γ_a is a free parameter it can raise. Raising
+> γ_a improves short-horizon tracking, so the agent raises it, and keeps raising
+> it, straight across a stability boundary its objective cannot represent. The
+> failure is an **objective-specification failure**, not an emergent property of
+> self-modification.
+
+The distinction matters for what generalises. Nothing here shows that an agent
+which *could* see the margin would still destroy it. What it shows is that an
+agent scoring candidates on a margin-blind objective will spend margin down to
+zero, because margin is free from its point of view.
+
+Consistent with this, L2 — which cannot touch γ_a — diverges 0/200 at H = 20 and
+H = 100 in the same cell. L2's divergences at H = 5 come from a different route
+(a myopic rollout mis-scoring structural changes), not from γ_a.
+
+**The ratchet.** Tracing the accepted modifications on the diverging L3 runs
+(γ_a = 10, H = 100, 200 seeds):
+
+| ω | `gamma_up` share of all accepted mods | `gamma_down` ever chosen? | median γ_a by step |
+|---|---|---|---|
+| 5.0 | **0.667** | yes, 21/600 | 10 → 20 → 40 → 40 |
+| 16.1 | 0.333 | yes, 186/1200 | 10 → 10 → 10 → 20 → 20 → 40 → 20 |
+
+`gamma_up` is the single most-selected candidate at ω = 5.0, taken by every seed
+at the first two decisions. But it is **not a monotone ratchet**: `gamma_down` is
+selected, and 5.3% (ω = 5.0) / 18.6% (ω = 16.1) of step-to-step γ_a changes are
+decreases. The drift is strongly upward on net without being one-directional —
+the agent does occasionally step back, just never far enough or soon enough.
 
 ### 3.1b The CSTR reproduces the finding independently, by a different mechanism
 
@@ -331,8 +394,9 @@ shrink at higher γ_a because diverged seeds stop self-modifying.
   Neither plant would have registered under the old detector.
 - **L0 and L1 never diverge on Rohrs at γ_a = 1 or 10** — 0 out of 43,200
   seed-configurations (21,600 per level). On the CSTR, L0 and L1 never diverge
-  at *any* γ_a — 0 out of 32,400. Adaptation alone is not the mechanism;
-  self-modification is.
+  at *any* γ_a — 0 out of 32,400. Adaptation alone, at the γ_a values the sweep
+  starts from, is not the mechanism. But see §3.1c: adaptation alone at
+  γ_a ≥ 18 *is* enough, and that is where the agent takes it.
 - **`no_change` is essentially never selected.** There is no accept/reject step;
   the agent modifies at every opportunity. "Accepted modification" here means
   "selected".
@@ -363,6 +427,13 @@ detector is now parameter drift (`|θ₂| > 50`) plus sustained safety-bound
 breach, each held for 0.5 s. Divergence results before this change should be
 disregarded entirely.
 
+**(d2) The divergence result is an objective-specification failure, not a
+property of self-modification.** A non-self-modifying controller started at
+γ_a ≥ 18 (ω = 5.0) or γ_a ≥ 15 (ω = 16.1) diverges 200/200 on its own (§3.1c).
+The self-modifying agent reaches γ_a = 20–80. It moved to a setting that is
+unstable for any controller, because its objective contains no stability term.
+Nothing here shows that an agent able to see the margin would still spend it.
+
 **(e) ε_emp is a lower bound on the true ε, of unknown tightness.** It maxes
 over the agent's own candidate list, not over policies.
 
@@ -371,9 +442,10 @@ differenced.** ε spans H steps; D spans the episode remainder. At γ = 0.99 and
 H = 5, ε cannot exceed 4.90 while D can reach 99.99. This is why the Theorem 7
 comparison was removed rather than repaired.
 
-**(g) The baseline is π₀, not π₁.** Theorem 7 compares the policy after t
-modifications against the policy after *one*. The L2/L3 baseline here never
-modifies (KNOWN_ISSUES M1).
+**(g) The baseline is π₀, not π₁ — the contrast is modify-vs-never-modify.**
+Theorem 7 compares the policy after t modifications against the policy after
+*one*. The L2/L3 baseline here never modifies at all. No result in §3 is a
+π_t-vs-π_1 comparison, and none should be read as one (KNOWN_ISSUES M1).
 
 **(h) γ is per-step, so the value horizon is shorter than the modification
 period at two of three γ values.** Effective horizon `1/(1−γ)` is 0.1 / 0.2 /

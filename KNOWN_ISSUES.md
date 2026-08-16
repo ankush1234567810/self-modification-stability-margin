@@ -89,6 +89,24 @@ config count quoted for L0/L1 overstates the number of distinct conditions by
 
 ---
 
+### The divergence finding is confounded by γ_a being both swept and modifiable
+`experiment.py` (γ_a sweep dimension), `controllers.py` (`gamma_up`/`gamma_down`)
+
+γ_a is a configuration dimension **and** a parameter L3 can modify. A
+verification run (README §3.1c) established a hard stability boundary at
+γ_a ≈ 14–15 (ω = 16.1) and 16–18 (ω = 5.0) for a controller that never
+self-modifies. L3 reaches γ_a = 20–80.
+
+The headline divergence result therefore does **not** show that
+self-modification is destabilising per se. It shows that a margin-blind
+objective will walk a free parameter across a stability boundary. The README
+states this; it is recorded here because the confound is structural and has not
+been designed out.
+
+A cleaner experiment would fix γ_a outside the agent's reach and let it modify
+only parameters with no independent stability boundary, or add a margin term to
+the objective and test whether the walk still happens. Neither was done.
+
 ## Open — statistical
 
 ### M7 (residual) — no uncertainty on any headline number
